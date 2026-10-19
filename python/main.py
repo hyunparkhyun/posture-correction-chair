@@ -7,10 +7,10 @@ import time
 import sys
 import threading
 
-########### 찐 최종 코드 건들지 말것!!!!!!!!!!!!!!!!!!!!!!!!!!!!!1######################################################
-# ==========================================
-# 1. 미디어파이프 및 카메라 스레드 설정
-# ==========================================
+# 자세 교정 의자 통합 제어 프로그램 (노트북 실행용)
+# ------------------------------------------
+# 1. 카메라 입력 및 MediaPipe 자세 추정
+# ------------------------------------------
 mp_pose = mp.solutions.pose
 pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5, model_complexity=0)
 
@@ -49,9 +49,9 @@ class ThreadedCamera:
 
 cap = ThreadedCamera(1) 
 
-# ==========================================
-# 2. 시리얼 포트 설정
-# ==========================================
+# ------------------------------------------
+# 2. Arduino 시리얼 통신 설정
+# ------------------------------------------
 ports = serial.tools.list_ports.comports()
 available_ports = [p.device for p in ports if 'ttyACM' in p.device or 'COM' in p.device]
 baud_rate = 115200 
@@ -62,9 +62,9 @@ for p in available_ports:
     try: ser_list.append(serial.Serial(p, baud_rate, timeout=0.01))
     except: pass
 
-# ==========================================
-# 3. 소프트웨어 영점 조절
-# ==========================================
+# ------------------------------------------
+# 3. 압력센서 영점 보정
+# ------------------------------------------
 def run_calibration(sample_time=3.0):
     print("\n" + "="*50)
     print(" ⚠️ 3초 뒤 영점 조절을 시작합니다.")
@@ -98,9 +98,9 @@ def run_calibration(sample_time=3.0):
 
 baseline_a, baseline_b = run_calibration()
 
-# ==========================================
-# 4. 상태 변수 및 모터 추적 설정
-# ==========================================
+# ------------------------------------------
+# 4. 자세 판별 및 모터 상태 변수
+# ------------------------------------------
 data_a, data_b = [0] * 16, [0] * 16 
 states = {'slide': 'STOP', 'tilt': 'STOP', 'lumbar': 'STOP', 'lift': 'STOP'}
 last_cmd_time = {'slide': 0.0, 'tilt': 0.0, 'lumbar': 0.0, 'lift': 0.0} 
@@ -139,9 +139,9 @@ def send_motor_command(motor_type, command):
                     s.flush() 
                 except: pass
 
-# ==========================================
-# 5. 맞춤형 데이터 수집
-# ==========================================
+# ------------------------------------------
+# 5. 사용자별 기준 자세 캘리브레이션
+# ------------------------------------------
 def run_personal_calibration(sample_time=5.0):
     while True: 
         print("\n" + "="*50)
@@ -160,7 +160,7 @@ def run_personal_calibration(sample_time=5.0):
 
         while time.time() - start_time < sample_time:
             for ser in ser_list:
-                # 🚨 버그 수정: 버퍼에 쌓인 데이터를 한 줄씩 안전하게 읽어오도록 while 루프 및 readline 적용
+                # 시리얼 버퍼에 누적된 센서 데이터를 줄 단위로 수신
                 while ser.in_waiting > 0:
                     try:
                         line = ser.readline().decode('utf-8', errors='ignore').strip()
@@ -168,7 +168,7 @@ def run_personal_calibration(sample_time=5.0):
                         raw = line.split(',')
                         
                         if len(raw) == 17:
-                            # A 패킷: 방석 (허벅지/엉덩이)
+                            # A 보드: 좌판 전방 및 후방 압력
                             if raw[0] == 'A':
                                 raw_a = [int(x) for x in raw[1:]]
                                 v_data_a = apply_tare_and_filter(raw_a, baseline_a)
@@ -176,7 +176,7 @@ def run_personal_calibration(sample_time=5.0):
                                 v_back = sum(v_data_a[i] for i in [4, 5, 6, 7, 12, 13, 14, 15])
                                 seat_front_samples.append(v_front)
                                 seat_back_samples.append(v_back)
-                            # B 패킷: 등받이 (어깨)
+                            # B 보드: 등받이 어깨 영역 압력
                             elif raw[0] == 'B':
                                 raw_b = [int(x) for x in raw[1:]]
                                 v_data_b = apply_tare_and_filter(raw_b, baseline_b)
@@ -184,13 +184,13 @@ def run_personal_calibration(sample_time=5.0):
                                 shoulder_samples.append(v_shoulder)
                     except: pass
         
-        # 수집된 데이터가 있는지 확인 후 계산
+        # 정상적으로 수집된 샘플에 한해 개인별 기준값 계산
         if shoulder_samples and seat_front_samples and seat_back_samples:
             personal_shoulder = int(sum(shoulder_samples) / len(shoulder_samples))
             avg_front = sum(seat_front_samples) / len(seat_front_samples)
             avg_back = sum(seat_back_samples) / len(seat_back_samples)
             
-            # 방어 로직: 엉덩이를 떼고 있었을 경우 0으로 나누는 오류 방지
+            # 좌판 후방 압력이 낮을 때 분모가 0에 가까워지는 상황 방지
             personal_seat_ratio = avg_front / avg_back if avg_back > 50 else 1.0
         else:
             personal_shoulder = 0
@@ -215,9 +215,9 @@ def run_personal_calibration(sample_time=5.0):
 
 PERSONAL_SHOULDER_THRESHOLD, PERSONAL_SEAT_RATIO = run_personal_calibration()
 
-# ==========================================
-# 5.5. 카메라 동기화 대기
-# ==========================================
+# ------------------------------------------
+# 6. 카메라 추적 확인 및 제어 시작 대기
+# ------------------------------------------
 print("\n" + "="*50)
 print(" 📷 카메라 동기화 및 위치 조정 (모터 대기 중)")
 print(" ⚠️ 화면 창이 뜨면, 내 몸에 초록색 선이 안정적으로 그려지는지 확인하세요.")
@@ -262,19 +262,19 @@ while cap.isOpened():
         for s in ser_list: s.close()
         sys.exit()
 
-# ==========================================
-# 6. 메인 루프
-# ==========================================
+# ------------------------------------------
+# 7. 자세 판별 및 모터 제어 메인 루프
+# ------------------------------------------
 try:
     last_print_time = time.time()
     last_update_time = time.time()
     smooth_turtle_score = 0.0 
     
-    # 💡 틸트만 일어날 때(Forward)와 누울 때(Backward)의 가중치를 분리했습니다.
+    # 원점 복귀 중 모터별 시간 보정 계수
     RETURN_WEIGHTS = {
         'slide': 1.2,  
-        'tilt_forward_return': 1.2,   # 🚨 [수정됨] 누웠다가 세워질 때 (0.8 -> 1.2으로 높여서 시간을 더 짧게 끊어줌)
-        'tilt_backward_return': 1.3,  # [유지] 숙였다가 누울 때 (기존 0.8로 잘 된다고 하셨으므로 건드리지 않음)
+        'tilt_forward_return': 1.2,   # 틸트 전진 방향 복귀 보정
+        'tilt_backward_return': 1.3,  # 틸트 후진 방향 복귀 보정
         'lumbar': 1.3, 
         'lift': 1.3
     }
@@ -286,9 +286,9 @@ try:
         dt = current_time - last_update_time
         last_update_time = current_time
 
-        # 🚨 [수정 완료] 틸트만 방향을 구별하여 가중치 적용
+        # 복귀 방향에 따라 틸트 모터의 보정 계수를 구분하여 적용
         for m in ['slide', 'tilt', 'lumbar', 'lift']:
-            # 현재 모터가 0점(원점)을 향해 돌아가고 있는지 판별
+            # 모터 누적 구동 시간으로 원점 복귀 방향 판단
             is_returning = False
             if (motor_offsets[m] > 0 and states[m] == 'BACKWARD') or (motor_offsets[m] < 0 and states[m] == 'FORWARD'):
                 is_returning = True
@@ -296,9 +296,9 @@ try:
             applied_dt = dt
             if is_returning:
                 if m == 'tilt':
-                    if states[m] == 'FORWARD':  # 뒤로 누웠다가 세워지는 복귀
+                    if states[m] == 'FORWARD':  # 틸트 전진 방향 복귀
                         applied_dt = dt * RETURN_WEIGHTS['tilt_forward_return']
-                    else:                       # 앞으로 숙였다가 눕는 복귀
+                    else:                       # 틸트 후진 방향 복귀
                         applied_dt = dt * RETURN_WEIGHTS['tilt_backward_return']
                 else:
                     applied_dt = dt * RETURN_WEIGHTS[m]
@@ -350,9 +350,9 @@ try:
         
         is_empty_chair = (sum(v_data_a) < 800)
 
-        # ==================================================
-        # D. 모터 제어 결정 로직 
-        # ==================================================
+        # ------------------------------------------
+        # 8. 자세 상태별 모터 제어 결정
+        # ------------------------------------------
         desired_cmds = {'slide': 'STOP', 'tilt': 'STOP', 'lumbar': 'STOP', 'lift': 'STOP'}
         is_returning_ui = False
 
@@ -362,7 +362,7 @@ try:
             is_returning_ui = True
             smooth_turtle_score = 0.0
 
-            # 상체(틸트, 럼버) 먼저 원점 복귀 -> 이후 하체 복귀
+            # 의자 이탈 시 상체 모터 복귀 후 하체 모터 복귀
             need_return_upper = (motor_offsets['tilt'] > 0.2 or motor_offsets['tilt'] < -0.2 or 
                                  motor_offsets['lumbar'] > 0.2 or motor_offsets['lumbar'] < -0.2)
 
@@ -399,7 +399,7 @@ try:
                     desired_cmds['lumbar'] = 'STOP'
 
         else:
-            # ── 판정 ──────────────────
+            # 자세 판별 기준 및 임계값
             base_ratio_limit = PERSONAL_SEAT_RATIO + 0.35
             current_ratio_limit = (base_ratio_limit + 0.25) if motor_offsets['lift'] > 1.0 else base_ratio_limit
             
@@ -422,25 +422,25 @@ try:
                 smooth_turtle_score = (smooth_turtle_score * 0.8) + (current_turtle_score * 0.2)
                 is_neck_bad = smooth_turtle_score > 0.70
 
-            # ── 독립 제어 ────────────────────────────────────
+            # 자세 유형별 목표 모터 명령
             active_issues = []
 
-            # 1. 좌판 슬라이딩 감지 시
+            # 좌판 전방 하중 증가에 따른 슬라이딩 자세 대응
             if is_slide_bad:
-                # 🚨 [확인 완료] 슬라이드와 틸트 무조건 동시 명령
+                # 슬라이드와 틸트 모터 동시 구동
                 desired_cmds['tilt'] = 'BACKWARD'
                 desired_cmds['slide'] = 'FORWARD'
                 active_issues.append("SLIDING")
 
-            # 2. 어깨 떠짐 감지 시
+            # 등받이 어깨 접촉이 부족한 경우
             if is_tilt_bad:
                 desired_cmds['tilt'] = 'BACKWARD' 
                 desired_cmds['lift'] = 'BACKWARD'
                 if "TILT" not in active_issues: active_issues.append("TILT")
 
-            # 3. 거북목 감지 시
+            # 목 기울기 및 압력 기반 거북목 판별 결과 반영
             if is_neck_bad:
-                # 다른 자세 때문에 틸트가 이미 작동 중이 아니라면 구동
+                # 다른 교정 동작이 틸트를 점유하지 않은 경우에만 틸트 지정
                 if desired_cmds['tilt'] == 'STOP':
                     desired_cmds['tilt'] = 'FORWARD'
                 desired_cmds['lumbar'] = 'FORWARD'
@@ -457,7 +457,7 @@ try:
                         desired_cmds[m] = 'STOP'
                     status_text += " (PWR LIMIT)"
 
-            # 4. 바른 자세 → 순차 복귀 (상체 먼저 -> 하체 나중에)
+            # 자세 정상화 시 상체 모터를 먼저 복귀시키고 하체 모터 복귀
             else:
                 need_return_upper = (motor_offsets['tilt'] > 0.2 or motor_offsets['tilt'] < -0.2 or 
                                      motor_offsets['lumbar'] > 0.2 or motor_offsets['lumbar'] < -0.2)
@@ -504,8 +504,8 @@ try:
                         status_text = "GOOD POSTURE"
                         color = (0, 255, 0)
 
-        # 🚨 [수정 완료] 절대 안전 한계치 증가 (4.0 -> 6.0초)
-        # 틸트가 작동하다가 한계치에 막혀서 멈추는 현상 방지
+        # 모터별 누적 구동 시간 한계 적용
+        # 틸트 구동 허용 시간은 6초, 나머지 모터는 5초로 설정
         max_times = {'slide': 5.0, 'tilt': 6.0, 'lumbar': 5.0, 'lift': 5.0}
         for m in ['slide', 'tilt', 'lumbar', 'lift']:
             target_cmd = desired_cmds[m]
@@ -519,9 +519,9 @@ try:
         for m in ['slide', 'tilt', 'lumbar', 'lift']:
             send_motor_command(m, desired_cmds[m])
 
-        # ==================================================
-        # E. 화면 출력 및 디버깅 텍스트
-        # ==================================================
+        # ------------------------------------------
+        # 9. 실시간 디버그 화면 및 상태 출력
+        # ------------------------------------------
         cv2.putText(frame, f"STATUS: {status_text}", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, color, 3)
         if is_returning_ui:
             cv2.putText(frame, "-> Auto Returning", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
